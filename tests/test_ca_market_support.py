@@ -44,3 +44,8 @@ def test_ca_code_utils_accept_and_preserve() -> None:
     # Invalid shapes are rejected.
     assert normalize_code("TD.TX") != "TD.TX"  # unknown suffix -> not preserved as ca
     assert is_code_like(".TO") is False
+
+
+def test_trading_calendar_registers_ca_exchange_and_timezone() -> None:
+    assert MARKET_EXCHANGE["ca"] == "XTSE"
+    assert MARKET_TIMEZONE["ca"] == "America/Toronto"
