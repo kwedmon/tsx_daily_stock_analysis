@@ -16,6 +16,7 @@
 
 import logging
 import random
+import re
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
@@ -137,6 +138,8 @@ def normalize_stock_code(stock_code: str) -> str:
             return f"{base}.{suffix.upper()}"
         if suffix.upper() in ('TW', 'TWO') and base.isdigit() and 4 <= len(base) <= 6:
             return f"{base}.{suffix.upper()}"
+        if suffix.upper() in ('TO', 'V') and re.fullmatch(r'[A-Z0-9][A-Z0-9\-]{0,11}', base.upper()):
+            return f"{base.upper()}.{suffix.upper()}"
         if suffix.upper() == 'HK' and base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
         if base.upper() in ('SH', 'SS', 'SZ', 'BJ') and suffix.isdigit():

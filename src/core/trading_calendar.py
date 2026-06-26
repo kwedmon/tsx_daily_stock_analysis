@@ -14,6 +14,7 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -119,6 +120,12 @@ def get_market_for_stock(code: str) -> Optional[str]:
     if not code or not isinstance(code, str):
         return None
     code = (code or "").strip().upper()
+
+    # Canada: TSX `.TO` / TSX-V `.V`. Same base-validating shape as detect_market /
+    # _is_ca_market (not bare endswith), so all entries agree; `.V` collides with the
+    # US single-letter-suffix check below, so this is first.
+    if re.match(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$', code):
+        return "ca"
 
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
 

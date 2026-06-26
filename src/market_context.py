@@ -50,6 +50,12 @@ def detect_market(stock_code: Optional[str]) -> str:
     if re.match(r'^\d{4,6}\.TW$', code):
         return "tw"
 
+    # Canada suffix-only Yahoo symbols (TSX `.TO`, TSX-V `.V`). Alphabetic base
+    # (optionally hyphenated, e.g. BAM-A.TO); both suffixes are captured by the US
+    # regex below, so this MUST precede it.
+    if re.match(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$', code):
+        return "ca"
+
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B
     if re.match(r'^[A-Z]{1,5}(\.[A-Z]{1,2})?$', code):

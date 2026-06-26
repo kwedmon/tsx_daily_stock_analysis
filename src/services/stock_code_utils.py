@@ -38,6 +38,10 @@ _SUFFIX_DIGIT_LENS: dict = {
 
 _PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
 
+# Canada TSX `.TO` / TSX-V `.V`: alphabetic (optionally hyphenated) base, validated
+# the same way as detect_market / _is_ca_market so all entry points agree.
+_CA_SUFFIX_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$')
+
 
 def _infer_cn_exchange(base: str) -> str:
     """Infer CN exchange from a 6-digit A/B-share code."""
@@ -103,6 +107,8 @@ def is_code_like(value: str) -> bool:
     # Support exchange-prefixed codes: SH600519, SZ000001, BJ920493, HK00700
     if _strip_exchange_prefix(text) is not None:
         return True
+    if _CA_SUFFIX_PATTERN.match(text):
+        return True
     return False
 
 
@@ -131,6 +137,8 @@ def normalize_code(raw: str) -> Optional[str]:
     stripped = _strip_exchange_prefix(text)
     if stripped is not None:
         return stripped
+    if _CA_SUFFIX_PATTERN.match(text):
+        return text
     return None
 
 
