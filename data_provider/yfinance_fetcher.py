@@ -103,6 +103,15 @@ class YfinanceFetcher(BaseFetcher):
             return base.isdigit() and 4 <= len(base) <= 6
         return False
 
+    @staticmethod
+    def _is_ca_suffix_stock(stock_code: str) -> bool:
+        """True for supported Canada suffix-only Yahoo symbols (TSX `.TO` / TSX-V `.V`).
+
+        Validates the base (same shape as detect_market) so all entries agree.
+        """
+        import re
+        return bool(re.match(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$', (stock_code or "").strip().upper()))
+
     def _convert_stock_code(self, stock_code: str) -> str:
         """
         转换股票代码为 Yahoo Finance 格式
@@ -140,9 +149,9 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股代码: {code}")
             return code
 
-        # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
-        if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
-            logger.debug(f"识别为日韩台 Yahoo suffix 代码: {code}")
+        # 日股/韩股/台股/加股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
+        if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code) or self._is_ca_suffix_stock(code):
+            logger.debug(f"识别为日韩台加 Yahoo suffix 代码: {code}")
             return code
 
         # 港股：hk前缀 -> .HK后缀
@@ -792,13 +801,14 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股股票或 JP/KR/TW suffix-only 股票
+        # 仅处理美股股票或 JP/KR/TW/CA suffix-only 股票
         if not (
             self._is_us_stock(stock_code)
             or self._is_jp_kr_suffix_stock(stock_code)
             or self._is_tw_suffix_stock(stock_code)
+            or self._is_ca_suffix_stock(stock_code)
         ):
-            logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩 suffix 代码，跳过")
+            logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩台加 suffix 代码，跳过")
             return None
 
         try:
