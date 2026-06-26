@@ -16,6 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
+import re
 from datetime import datetime
 from io import StringIO
 from typing import Optional, List, Dict, Any
@@ -105,12 +106,12 @@ class YfinanceFetcher(BaseFetcher):
 
     @staticmethod
     def _is_ca_suffix_stock(stock_code: str) -> bool:
-        """True for supported Canada suffix-only Yahoo symbols (TSX `.TO` / TSX-V `.V`).
+        """True for supported Canada suffix Yahoo symbols (TSX `.TO` / TSX-V `.V` / unit `.UN`).
 
         Validates the base (same shape as detect_market) so all entries agree.
         """
         import re
-        return bool(re.match(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$', (stock_code or "").strip().upper()))
+        return bool(re.match(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V|UN)$', (stock_code or "").strip().upper()))
 
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -137,6 +138,12 @@ class YfinanceFetcher(BaseFetcher):
             'AAPL'
         """
         code = stock_code.strip().upper()
+
+        # 加拿大信托/REIT 单位简写 `BASE.UN` -> 规范 Yahoo 形式 `BASE-UN.TO`，
+        # 再走下方加股 suffix 直传逻辑。
+        _un = re.match(r'^([A-Z0-9][A-Z0-9\-]{0,11})\.UN$', code)
+        if _un:
+            code = f"{_un.group(1)}-UN.TO"
 
         # 美股指数：映射到 Yahoo Finance 符号（如 SPX -> ^GSPC）
         yf_symbol, _ = get_us_index_yf_symbol(code)

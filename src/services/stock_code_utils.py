@@ -38,9 +38,11 @@ _SUFFIX_DIGIT_LENS: dict = {
 
 _PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
 
-# Canada TSX `.TO` / TSX-V `.V`: alphabetic (optionally hyphenated) base, validated
-# the same way as detect_market / _is_ca_market so all entry points agree.
-_CA_SUFFIX_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$')
+# Canada TSX `.TO` / TSX-V `.V` / trust unit `.UN` (or canonical `-UN.TO`): alphabetic
+# (optionally hyphenated) base, validated the same way as detect_market / _is_ca_market
+# so all entry points agree. `.UN` shorthand canonicalizes to `-UN.TO` in normalize_code.
+_CA_SUFFIX_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V|UN)$')
+_CA_UNIT_SHORTHAND = re.compile(r'^([A-Z0-9][A-Z0-9\-]{0,11})\.UN$')
 
 
 def _infer_cn_exchange(base: str) -> str:
@@ -138,7 +140,8 @@ def normalize_code(raw: str) -> Optional[str]:
     if stripped is not None:
         return stripped
     if _CA_SUFFIX_PATTERN.match(text):
-        return text
+        un = _CA_UNIT_SHORTHAND.match(text)
+        return f"{un.group(1)}-UN.TO" if un else text
     return None
 
 

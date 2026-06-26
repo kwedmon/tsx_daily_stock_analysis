@@ -140,6 +140,9 @@ def normalize_stock_code(stock_code: str) -> str:
             return f"{base}.{suffix.upper()}"
         if suffix.upper() in ('TO', 'V') and re.fullmatch(r'[A-Z0-9][A-Z0-9\-]{0,11}', base.upper()):
             return f"{base.upper()}.{suffix.upper()}"
+        # Canadian trust/REIT unit shorthand `BASE.UN` -> canonical Yahoo `BASE-UN.TO`.
+        if suffix.upper() == 'UN' and re.fullmatch(r'[A-Z0-9][A-Z0-9\-]{0,11}', base.upper()):
+            return f"{base.upper()}-UN.TO"
         if suffix.upper() == 'HK' and base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
         if base.upper() in ('SH', 'SS', 'SZ', 'BJ') and suffix.isdigit():
@@ -210,14 +213,14 @@ def _is_tw_market(code: str) -> bool:
     return base.isdigit() and 4 <= len(base) <= 6
 
 
-_CA_SUFFIX_RE = re.compile(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V)$')
+_CA_SUFFIX_RE = re.compile(r'^[A-Z0-9][A-Z0-9\-]{0,11}\.(TO|V|UN)$')
 
 
 def _is_ca_market(code: str) -> bool:
-    """判定是否为加拿大 Yahoo Finance suffix 代码（TSX `.TO` / TSX-V `.V`）。
+    """判定是否为加拿大 Yahoo Finance suffix 代码（TSX `.TO` / TSX-V `.V` / 信托单位 `.UN`）。
 
     校验 base（不只是后缀），与 detect_market / stock_code_utils 语义一致：
-    `.TO`、`FOO..TO`、超长 base 在所有入口都被拒绝。
+    `.TO`、`FOO..TO`、超长 base 在所有入口都被拒绝。`.UN` 简写与规范化 `-UN.TO` 均识别为加股。
     """
     return bool(_CA_SUFFIX_RE.match((code or "").strip().upper()))
 

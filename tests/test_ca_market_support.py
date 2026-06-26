@@ -102,6 +102,25 @@ def test_market_tag_classifies_ca() -> None:
     assert _market_tag("AAPL") == "us"
 
 
+def test_ca_unit_un_suffix_normalizes_to_yahoo_form() -> None:
+    """Trust/REIT 'unit' shorthand `BASE.UN` (broker form) -> `BASE-UN.TO` (Yahoo form)."""
+    from data_provider.base import _market_tag
+
+    # Detection: both the .UN shorthand and the canonical -UN.TO are 'ca'.
+    assert detect_market("VITL.UN") == "ca"
+    assert detect_market("REI-UN.TO") == "ca"
+    assert get_market_for_stock("VITL.UN") == "ca"
+    assert _market_tag("VITL.UN") == "ca"
+
+    # Canonicalization to the Yahoo form (so the data layer fetches the right symbol).
+    assert normalize_stock_code("vitl.un") == "VITL-UN.TO"
+    assert normalize_stock_code("rei.un") == "REI-UN.TO"
+    assert normalize_stock_code("rei-un.to") == "REI-UN.TO"   # already canonical, unchanged
+    assert normalize_code("vitl.un") == "VITL-UN.TO"
+    assert YfinanceFetcher()._convert_stock_code("VITL.UN") == "VITL-UN.TO"
+    assert YfinanceFetcher()._convert_stock_code("VITL-UN.TO") == "VITL-UN.TO"
+
+
 def test_data_fetcher_manager_routes_ca_daily_only_to_yfinance() -> None:
     efinance = _FakeFetcher("EfinanceFetcher", should_fail=True)
     akshare = _FakeFetcher("AkshareFetcher", should_fail=True)
@@ -130,6 +149,7 @@ def test_ca_fundamentals_use_offshore_path() -> None:
 
 @pytest.mark.parametrize("code,is_ca", [
     ("TD.TO", True), ("BAM-A.TO", True), ("ABC.V", True), ("XIU.TO", True),
+    ("REI-UN.TO", True),  # canonical trust-unit form
     (".TO", False), ("FOO..TO", False), ("TOOLONGSYMBOLX.TO", False),
     ("TD.TX", False), ("AAPL", False), ("600519", False),
 ])
