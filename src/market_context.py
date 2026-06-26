@@ -92,6 +92,10 @@ _MARKET_ROLES = {
         "zh": "台股",
         "en": "Taiwan stock",
     },
+    "ca": {
+        "zh": "加拿大股",
+        "en": "Canadian (TSX) stock",
+    },
 }
 
 _MARKET_GUIDELINES = {
@@ -158,6 +162,21 @@ _MARKET_GUIDELINES = {
             "electronics-foundry supply chain, the three institutional investor groups (foreign / "
             "investment-trust / dealer), margin trading and day trading, and the TWSE/TPEx ±10% daily "
             "price limit; do not apply China A-share-specific concepts such as Northbound flows or Dragon Tiger lists."
+        ),
+    },
+    "ca": {
+        "zh": (
+            "- 本次分析对象为 **加拿大股**（多伦多证券交易所 `.TO`，或 TSX Venture `.V`）。\n"
+            "- 请按加拿大市场语境分析，关注加元（CAD）汇率、加拿大央行（BoC）政策、TSX/TSX-V 交易制度，"
+            "以及资源、金融、科技板块结构；多伦多证券交易所无涨跌停限制、支持 T+0；"
+            "不要套用 A 股涨跌停、北向资金、龙虎榜、融资融券等 A 股专属概念。"
+        ),
+        "en": (
+            "- This analysis covers a **Canadian (TSX) stock** (TSX-listed `.TO`, or TSX Venture `.V`).\n"
+            "- Use Canada-market context: the Canadian dollar (CAD) FX, Bank of Canada (BoC) policy, "
+            "TSX/TSX-V trading rules, and the resource / financial / technology sector mix. The TSX has "
+            "no daily price limits and supports same-day trading; do not apply China A-share concepts "
+            "such as daily price-limit boards, Northbound flows, Dragon Tiger lists, or margin-financing narratives."
         ),
     },
 }

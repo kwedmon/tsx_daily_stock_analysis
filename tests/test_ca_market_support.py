@@ -49,3 +49,15 @@ def test_ca_code_utils_accept_and_preserve() -> None:
 def test_trading_calendar_registers_ca_exchange_and_timezone() -> None:
     assert MARKET_EXCHANGE["ca"] == "XTSE"
     assert MARKET_TIMEZONE["ca"] == "America/Toronto"
+
+
+def test_market_role_and_guidelines_for_ca_bilingual() -> None:
+    assert get_market_role("TD.TO", "zh") == "加拿大股"
+    assert get_market_role("TD.TO", "en") == "Canadian (TSX) stock"
+
+    zh = get_market_guidelines("TD.TO", "zh")
+    assert "加拿大" in zh and "加元" in zh
+    assert "北向资金" in zh and "龙虎榜" in zh   # named in the A-share-exclusion clause
+
+    en = get_market_guidelines("TD.TO", "en")
+    assert "Canad" in en and ("CAD" in en or "Canadian dollar" in en)
