@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增加拿大（TSX `.TO` / TSX-V `.V`）suffix-only 个股分析 MVP：市场识别（全入口共用 base 校验正则，`ca` 置于美股分支前避免 `.V` 冲突）、code-utils 校验、YFinance 数据路由与 offshore 基本面分流、交易日历（XTSE / America/Toronto）、中英文 Prompt 语义；并将 `ca` 纳入 DecisionSignal / Portfolio / Intelligence 服务层与 API 市场枚举（VALID_MARKETS / _ALLOWED_MARKETS + Pydantic Literal）、放行前端市场类型/筛选/标签。加拿大股票索引/种子、Web 自动补全、加拿大大盘复盘（`^GSPTSE`）、告警市场放行与 Portfolio CAD 口径作为后续 PR；CDR（`.NE`）独立后续。
 - [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
 
 - [改进] Web 设置页新增首次启动配置检查卡，串联基础配置状态、自选股入口、模型配置入口和一次简短试跑。
