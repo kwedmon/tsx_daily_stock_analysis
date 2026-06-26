@@ -144,3 +144,20 @@ def test_ca_symbol_recognition_consistent_across_entries(code, is_ca) -> None:
         assert is_code_like(code) is True
         assert normalize_code(code) == code
         assert normalize_stock_code(code) == code
+
+
+def test_ca_is_first_class_on_write_paths() -> None:
+    from src.services.decision_signal_service import DecisionSignalService
+    from src.services.portfolio_service import VALID_MARKETS
+    from src.services.intelligence_service import _ALLOWED_MARKETS
+
+    assert get_market_for_stock("TD.TO") == "ca"
+    assert DecisionSignalService._normalize_market("ca") == "ca"
+    assert "ca" in VALID_MARKETS and "ca" in _ALLOWED_MARKETS
+
+
+def test_ca_accepted_by_portfolio_api_schema() -> None:
+    """Pydantic Literal must accept market='ca' (not just Python sets)."""
+    from api.v1.schemas.portfolio import PortfolioAccountCreateRequest
+    model = PortfolioAccountCreateRequest(name="RRSP", market="ca", base_currency="CAD")
+    assert model.market == "ca"

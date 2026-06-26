@@ -17,7 +17,7 @@ def detect_market(stock_code: Optional[str]) -> str:
     """Detect market from stock code.
 
     Returns:
-        One of 'cn', 'hk', 'us', or 'cn' as fallback.
+        One of 'cn', 'hk', 'us', 'jp', 'kr', 'tw', 'ca', or 'cn' as fallback.
     """
     if not stock_code:
         return "cn"
