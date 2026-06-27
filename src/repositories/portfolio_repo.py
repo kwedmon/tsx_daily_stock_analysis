@@ -59,6 +59,7 @@ class PortfolioRepository:
         market: str,
         base_currency: str,
         owner_id: Optional[str] = None,
+        account_type: Optional[str] = None,
     ) -> PortfolioAccount:
         with self.db.get_session() as session:
             row = PortfolioAccount(
@@ -67,6 +68,7 @@ class PortfolioRepository:
                 broker=broker,
                 market=market,
                 base_currency=base_currency,
+                account_type=account_type,
                 is_active=True,
             )
             session.add(row)

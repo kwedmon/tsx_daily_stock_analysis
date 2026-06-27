@@ -18,6 +18,7 @@ from src.repositories.portfolio_repo import (
     PortfolioBusyError as RepoPortfolioBusyError,
     PortfolioRepository,
 )
+from src.portfolio.account_types import normalize_account_type
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ except Exception:  # pragma: no cover - optional dependency path
     yf = None
 
 EPS = 1e-8
+_UNSET = object()
 VALID_MARKETS = {"cn", "hk", "us", "jp", "kr", "tw", "ca"}
 VALID_COST_METHODS = {"fifo", "avg"}
 VALID_SIDES = {"buy", "sell"}
@@ -97,6 +99,7 @@ class PortfolioService:
         market: str,
         base_currency: str,
         owner_id: Optional[str] = None,
+        account_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         name_norm = (name or "").strip()
         if not name_norm:
@@ -109,6 +112,7 @@ class PortfolioService:
             market=market_norm,
             base_currency=base_currency_norm,
             owner_id=(owner_id or "").strip() or None,
+            account_type=normalize_account_type(account_type),
         )
         return self._account_to_dict(row)
 
@@ -126,6 +130,7 @@ class PortfolioService:
         base_currency: Optional[str] = None,
         owner_id: Optional[str] = None,
         is_active: Optional[bool] = None,
+        account_type: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
         fields: Dict[str, Any] = {}
         if name is not None:
@@ -143,6 +148,8 @@ class PortfolioService:
             fields["owner_id"] = owner_id.strip() or None
         if is_active is not None:
             fields["is_active"] = bool(is_active)
+        if account_type is not _UNSET:
+            fields["account_type"] = normalize_account_type(account_type)
         if not fields:
             raise ValueError("No fields provided for update")
 
@@ -1517,6 +1524,7 @@ class PortfolioService:
             "broker": row.broker,
             "market": row.market,
             "base_currency": row.base_currency,
+            "account_type": row.account_type,
             "is_active": bool(row.is_active),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,

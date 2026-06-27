@@ -88,6 +88,7 @@ def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountIt
             market=request.market,
             base_currency=request.base_currency,
             owner_id=request.owner_id,
+            account_type=request.account_type,
         )
         return PortfolioAccountItem(**row)
     except ValueError as exc:
@@ -122,6 +123,9 @@ def list_accounts(
 def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> PortfolioAccountItem:
     service = PortfolioService()
     try:
+        account_type_kwargs = {}
+        if "account_type" in request.model_fields_set:
+            account_type_kwargs["account_type"] = request.account_type
         updated = service.update_account(
             account_id,
             name=request.name,
@@ -130,6 +134,7 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
             base_currency=request.base_currency,
             owner_id=request.owner_id,
             is_active=request.is_active,
+            **account_type_kwargs,
         )
         if updated is None:
             raise api_error(404, "not_found", f"Account not found: {account_id}")

@@ -12,6 +12,7 @@ export interface PortfolioAccountItem {
   broker?: string | null;
   market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca';
   baseCurrency: string;
+  accountType?: string | null;
   isActive: boolean;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -26,6 +27,7 @@ export interface PortfolioAccountCreateRequest {
   broker?: string;
   market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca';
   baseCurrency: string;
+  accountType?: string;
   ownerId?: string;
 }
 

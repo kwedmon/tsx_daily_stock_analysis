@@ -14,6 +14,7 @@ class PortfolioAccountCreateRequest(BaseModel):
     broker: Optional[str] = Field(None, max_length=64)
     market: Literal["cn", "hk", "us", "jp", "kr", "tw", "ca"] = "cn"
     base_currency: str = Field("CNY", min_length=3, max_length=8)
+    account_type: Optional[str] = Field(default=None, max_length=32)
     owner_id: Optional[str] = Field(None, max_length=64)
 
 
@@ -22,6 +23,7 @@ class PortfolioAccountUpdateRequest(BaseModel):
     broker: Optional[str] = Field(None, max_length=64)
     market: Optional[Literal["cn", "hk", "us", "jp", "kr", "tw", "ca"]] = None
     base_currency: Optional[str] = Field(None, min_length=3, max_length=8)
+    account_type: Optional[str] = Field(default=None, max_length=32)
     owner_id: Optional[str] = Field(None, max_length=64)
     is_active: Optional[bool] = None
 
@@ -33,6 +35,7 @@ class PortfolioAccountItem(BaseModel):
     broker: Optional[str] = None
     market: str
     base_currency: str
+    account_type: Optional[str] = None
     is_active: bool
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

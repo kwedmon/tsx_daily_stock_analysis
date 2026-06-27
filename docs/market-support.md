@@ -72,6 +72,7 @@
 - 基本面复用既有 offshore yfinance 轻量路径；A 股专属资金流、龙虎榜、板块等能力按 `not_supported` 降级。
 - 报告 Prompt 已增加加拿大市场语义（加元 CAD、BoC 政策、TSX/TSX-V 无涨跌停、T+0、资源/金融/科技板块），避免套用 A 股涨跌停、北向资金、龙虎榜、融资融券等概念。
 - 交易日历注册 `ca: XTSE / America/Toronto`。若本地 `exchange-calendars` 版本缺少对应日历，既有 fail-open/fail-closed 语义保持不变。
+- Portfolio 账户支持通用 nullable `account_type` 标签。加拿大账户创建时提供 RRSP、TFSA、FHSA、RRIF、RESP、LIRA、RDSP、非注册现金和非注册保证金选项，账户选择器按类型分组；该字段仅用于标签和展示，不包含税务、额度或资产配置逻辑。API 支持自定义值、更新与显式清空；Web 编辑和自定义值输入留待后续。
 
 不承诺项：
 

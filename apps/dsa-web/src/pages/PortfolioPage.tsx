@@ -52,6 +52,11 @@ import type {
 import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
 import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/decisionAction';
+import {
+  ACCOUNT_TYPE_LABELS,
+  accountTypesForMarket,
+  groupAccountsByType,
+} from '../utils/accountTypes';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
@@ -179,6 +184,7 @@ const PortfolioPage: React.FC = () => {
     broker: 'Demo',
     market: 'cn' as PortfolioAccountMarket,
     baseCurrency: 'CNY',
+    accountType: '',
   });
   const [costMethod, setCostMethod] = useState<PortfolioCostMethod>('fifo');
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotResponse | null>(null);
@@ -257,6 +263,7 @@ const PortfolioPage: React.FC = () => {
   const refreshContextRef = useRef<FxRefreshContext>({ viewKey: refreshViewKey, requestId: 0 });
   const hasAccounts = accounts.length > 0;
   const writableAccount = selectedAccount === 'all' ? undefined : accounts.find((item) => item.id === selectedAccount);
+  const accountTypeGroups = useMemo(() => groupAccountsByType(accounts), [accounts]);
   const writableAccountId = writableAccount?.id;
   const writeBlocked = !writableAccountId;
   const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !fxRefreshing && !accountDeleteLoading;
@@ -791,6 +798,7 @@ const PortfolioPage: React.FC = () => {
         broker: accountForm.broker.trim() || undefined,
         market: accountForm.market,
         baseCurrency: accountForm.baseCurrency.trim() || 'CNY',
+        accountType: accountForm.accountType || undefined,
       });
       await loadAccounts();
       setSelectedAccount(created.id);
@@ -801,6 +809,7 @@ const PortfolioPage: React.FC = () => {
         broker: 'Demo',
         market: accountForm.market,
         baseCurrency: accountForm.baseCurrency,
+        accountType: '',
       });
       setAccountCreateSuccess('账户创建成功，已自动切换到该账户。');
     } catch (err) {
@@ -941,15 +950,20 @@ const PortfolioPage: React.FC = () => {
               <div>
                 <p className="text-xs text-secondary mb-1">{text.accountView}</p>
                 <select
+                  aria-label={text.accountView}
                   value={String(selectedAccount)}
                   onChange={(e) => setSelectedAccount(e.target.value === 'all' ? 'all' : Number(e.target.value))}
                   className={PORTFOLIO_SELECT_CLASS}
                 >
                   <option value="all">{text.allAccounts}</option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name} (#{account.id})
-                    </option>
+                  {accountTypeGroups.map((group) => (
+                    <optgroup key={group.key || 'untyped'} label={group.label}>
+                      {group.accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name} (#{account.id})
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
               </div>
@@ -1083,9 +1097,14 @@ const PortfolioPage: React.FC = () => {
               onChange={(e) => setAccountForm((prev) => ({ ...prev, baseCurrency: e.target.value.toUpperCase() }))}
             />
             <select
+              aria-label="账户市场"
               className={PORTFOLIO_SELECT_CLASS}
               value={accountForm.market}
-              onChange={(e) => setAccountForm((prev) => ({ ...prev, market: e.target.value as PortfolioAccountMarket }))}
+              onChange={(e) => setAccountForm((prev) => ({
+                ...prev,
+                market: e.target.value as PortfolioAccountMarket,
+                accountType: e.target.value === 'ca' ? prev.accountType : '',
+              }))}
             >
               <option value="cn">市场：A 股（cn）</option>
               <option value="hk">市场：港股（hk）</option>
@@ -1095,6 +1114,21 @@ const PortfolioPage: React.FC = () => {
               <option value="tw">市场：台股（tw）</option>
               <option value="ca">市场：加拿大（ca）</option>
             </select>
+            {accountForm.market === 'ca' ? (
+              <select
+                aria-label="账户类型"
+                className={PORTFOLIO_SELECT_CLASS}
+                value={accountForm.accountType}
+                onChange={(e) => setAccountForm((prev) => ({ ...prev, accountType: e.target.value }))}
+              >
+                <option value="">未指定</option>
+                {accountTypesForMarket('ca').map((accountType) => (
+                  <option key={accountType} value={accountType}>
+                    {ACCOUNT_TYPE_LABELS[accountType] ?? accountType}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <button type="submit" className="btn-secondary text-sm" disabled={accountCreating}>
               {accountCreating ? '创建中...' : '创建账户'}
             </button>

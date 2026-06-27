@@ -97,8 +97,9 @@ vi.mock('recharts', () => ({
 type AccountItem = {
   id: number;
   name: string;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca';
   baseCurrency?: string;
+  accountType?: string;
 };
 
 function makeAccounts(items: AccountItem[] = [{ id: 1, name: 'Main' }]) {
@@ -109,6 +110,7 @@ function makeAccounts(items: AccountItem[] = [{ id: 1, name: 'Main' }]) {
       broker: 'Demo',
       market: item.market ?? 'us',
       baseCurrency: item.baseCurrency ?? 'CNY',
+      accountType: item.accountType,
       isActive: true,
       ownerId: null,
       createdAt: '2026-03-19T00:00:00Z',
@@ -1080,5 +1082,44 @@ describe('PortfolioPage FX refresh', () => {
     await waitFor(() => expect(getAccounts).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('Main (#1)')).not.toBeInTheDocument());
     expect(screen.getByRole('option', { name: 'Alt (#2)' })).toBeInTheDocument();
+  });
+
+  it('creates a Canadian account with an account type and groups account options', async () => {
+    getAccounts.mockResolvedValueOnce(makeAccounts([
+      { id: 1, name: 'Retirement', market: 'ca', baseCurrency: 'CAD', accountType: 'rrsp' },
+      { id: 2, name: 'Custom', market: 'ca', baseCurrency: 'CAD', accountType: 'family' },
+      { id: 3, name: 'Untyped', market: 'ca', baseCurrency: 'CAD' },
+    ]));
+    createAccount.mockResolvedValueOnce({
+      id: 4,
+      name: 'New TFSA',
+      market: 'ca',
+      baseCurrency: 'CAD',
+      accountType: 'tfsa',
+      isActive: true,
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const accountSelector = screen.getByLabelText('账户视图');
+    expect(within(accountSelector).getByRole('group', { name: 'RRSP' })).toBeInTheDocument();
+    expect(within(accountSelector).getByRole('group', { name: 'family' })).toBeInTheDocument();
+    expect(within(accountSelector).getByRole('group', { name: '未分类' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '新建账户' }));
+    fireEvent.change(screen.getByLabelText('账户市场'), { target: { value: 'ca' } });
+    fireEvent.change(screen.getByLabelText('账户类型'), { target: { value: 'tfsa' } });
+    fireEvent.change(screen.getByPlaceholderText('账户名称（必填）'), { target: { value: 'New TFSA' } });
+    fireEvent.change(screen.getByPlaceholderText('基准币（如 CNY/USD/HKD）'), { target: { value: 'CAD' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建账户' }));
+
+    await waitFor(() => expect(createAccount).toHaveBeenCalledWith({
+      name: 'New TFSA',
+      broker: 'Demo',
+      market: 'ca',
+      baseCurrency: 'CAD',
+      accountType: 'tfsa',
+    }));
   });
 });

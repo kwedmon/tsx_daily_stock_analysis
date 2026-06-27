@@ -496,6 +496,7 @@ class PortfolioAccount(Base):
     broker = Column(String(64))
     market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
     base_currency = Column(String(8), nullable=False, default='CNY')
+    account_type = Column(String(32), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -854,6 +855,10 @@ _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "approx_common_prefix_tokens": "INTEGER",
     "known_dynamic_marker_positions": "TEXT",
 }
+
+_PORTFOLIO_ACCOUNT_COLUMN_SQL: Dict[str, str] = {
+    "account_type": "VARCHAR(32)",
+}
 _LLM_USAGE_INTEGER_TELEMETRY_COLUMNS = {
     column
     for column, column_type in _LLM_USAGE_TELEMETRY_COLUMN_SQL.items()
@@ -1181,6 +1186,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 创建所有表
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
+            self._ensure_portfolio_account_type_column()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1371,6 +1377,55 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
                         logger.warning(
                             "[LLM usage] SQLite telemetry column backfill locked, "
+                            "retrying: %s (%s/%s, %.2fs)",
+                            column,
+                            attempt + 1,
+                            max_retries,
+                            delay,
+                        )
+                        if delay > 0:
+                            time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_portfolio_account_type_column(self) -> None:
+        """Add the nullable account_type column to existing SQLite databases."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(PortfolioAccount.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[portfolio] failed to inspect account columns; "
+                "skipping account_type backfill: %s",
+                exc,
+            )
+            return
+
+        max_retries = self._sqlite_write_retry_max
+        for column, column_type in _PORTFOLIO_ACCOUNT_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {PortfolioAccount.__tablename__} "
+                            f"ADD COLUMN {column} {column_type}"
+                        )
+                    existing.add(column)
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_duplicate_column_error(exc, column):
+                        existing.add(column)
+                        break
+                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
+                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "[portfolio] SQLite account column backfill locked, "
                             "retrying: %s (%s/%s, %.2fs)",
                             column,
                             attempt + 1,
