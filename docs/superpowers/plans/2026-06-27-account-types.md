@@ -14,7 +14,7 @@
 
 - Branch `feature/account-types` (off `feature/ca-market`; has Tier 0 code + spec). Commits English, no `Co-Authored-By`, **only with explicit user authorization** (else stop at "tests pass").
 - `account_type`: nullable, **advisory free-string** (no `Literal`), `VARCHAR(32)`; normalized `strip().lower()`, empty → `None`. CA known set: `rrsp, tfsa, fhsa, rrif, resp, lira, rdsp, non_registered_cash, non_registered_margin`.
-- **OPEN DECISION (needs user confirmation — do not assume):** web **account-edit UI**. The web has no edit flow today (`portfolioApi.updateAccount()` does not exist), but "no flow exists" is not itself a reason to drop the locked design. Backend update IS implemented (API/service/repo) so the field is editable via API. Option (a): keep design — add `portfolioApi.updateAccount()` + edit form + component test. Option (b): user confirms deferral — then record the follow-up in spec + CHANGELOG. Web custom-value input is pending the same decision. **Tasks below assume (b) for now; switch Task 5 to (a) if the user chooses to keep edit.**
+- **Deferred (user-confirmed 2026-06-27):** web **account-edit UI** + web **custom-value input** are a follow-up work item (recorded in spec + CHANGELOG). The web has no account-edit flow today; `account_type` is fully editable via the API meanwhile. This plan does web **create + grouped display only**.
 - **Test DB pattern (canonical, mirror `tests/test_portfolio_service.py`):** set `os.environ["DATABASE_PATH"]` to a temp file, `Config.reset_instance()`, `DatabaseManager.reset_instance()`, `DatabaseManager.get_instance()`, `PortfolioService()`; teardown resets both singletons and pops env. Run in `dsa-test` image: `docker run --rm -v $PWD:/app -w /app --entrypoint python dsa-test -m pytest <path> -v`.
 - Reference: `docs/superpowers/specs/2026-06-26-canada-cdr-support-design.md` (§ Tier 1 account type).
 
@@ -320,10 +320,11 @@ class AccountTypeEndpointTests(unittest.TestCase):
 
 **Files:**
 - Modify `apps/dsa-web/src/types/portfolio.ts` (add `accountType?: string` to item + create payload types).
-- Modify `apps/dsa-web/src/api/portfolio.ts` (`createAccount`: map `accountType` → `account_type`; item parser: `account_type` → `accountType`). **No `updateAccount` added — edit is out of scope.**
+- Modify `apps/dsa-web/src/api/portfolio.ts` (`createAccount`: map `accountType` → `account_type`; item parser: `account_type` → `accountType`). **No `updateAccount` added — edit is deferred.**
 - Create `apps/dsa-web/src/utils/accountTypes.ts` (`CA_ACCOUNT_TYPES`, `accountTypesForMarket`, `ACCOUNT_TYPE_LABELS`, `groupAccountsByType(accounts)`).
-- Modify `apps/dsa-web/src/pages/PortfolioPage.tsx`: `accountForm` state (~line 180) gains `accountType: ''`; create form (~line 1088, near the market `<select>`) renders an account-type `<select>` **only when `accountForm.market === 'ca'`** (options from `accountTypesForMarket('ca')` + a blank "未指定"); include `accountType` in the `createAccount` payload (~line 789); the account selector (~line 949) groups accounts via `<optgroup>` by type (untyped accounts in a "未分类" group); show the type on the account card.
-- Test: `apps/dsa-web/src/utils/__tests__/accountTypes.test.ts` (new).
+- Create `apps/dsa-web/src/components/AccountTypeSelect.tsx` — a small presentational component `({ market, value, onChange })` that renders the labelled `<select>` (CA options + a blank "未指定") **only when `market === 'ca'`**, else `null`. (Extracted so it is unit-testable without rendering the whole `PortfolioPage`.)
+- Modify `apps/dsa-web/src/pages/PortfolioPage.tsx`: `accountForm` state (~line 180) gains `accountType: ''`; the create form (~line 1088, after the market `<select>`) renders `<AccountTypeSelect market={accountForm.market} value={accountForm.accountType} onChange={(v) => setAccountForm((p) => ({ ...p, accountType: v }))} />`; include `accountType` in the `createAccount` payload (~line 789). **Display:** the account selector (~line 949) groups accounts via `<optgroup>` (label = `ACCOUNT_TYPE_LABELS[type]`, untyped under "未分类" last) using `groupAccountsByType` — this grouped selector IS the type display (no separate "card"; if an account card view is later added, reuse `ACCOUNT_TYPE_LABELS`).
+- Tests: `apps/dsa-web/src/utils/__tests__/accountTypes.test.ts` and `apps/dsa-web/src/components/__tests__/AccountTypeSelect.test.tsx` (new).
 
 - [ ] **Step 1: Write the failing test**:
 
@@ -387,8 +388,30 @@ export function groupAccountsByType<T extends { accountType?: string }>(accounts
 
 Then wire `types/portfolio.ts`, `api/portfolio.ts`, and `PortfolioPage.tsx` (state + conditional `<select>` when `market==='ca'` + payload + `<optgroup>` selector + card display).
 
-- [ ] **Step 4: Run → PASS** (vitest).
-- [ ] **Step 5: Lint + build + test** — `cd apps/dsa-web && npm run lint && npm run build && npm test`. PASS (TS exhaustiveness catches missed payload/type mappings).
+- [ ] **Step 4: Run → PASS** (vitest, helper).
+- [ ] **Step 4b: Component test for `AccountTypeSelect`** — `apps/dsa-web/src/components/__tests__/AccountTypeSelect.test.tsx` (mirror the render setup of an existing component test, e.g. `src/components/report/__tests__/AnalysisContextSummary.test.tsx`):
+
+```tsx
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import AccountTypeSelect from '../AccountTypeSelect';
+
+describe('AccountTypeSelect', () => {
+  it('renders the CA options only when market is ca', () => {
+    const { container, rerender } = render(
+      <AccountTypeSelect market="ca" value="" onChange={vi.fn()} />,
+    );
+    expect(screen.getByRole('combobox')).toBeTruthy();
+    expect(screen.getByRole('option', { name: /RRSP/ })).toBeTruthy();
+    rerender(<AccountTypeSelect market="us" value="" onChange={vi.fn()} />);
+    expect(container.querySelector('select')).toBeNull();   // hidden for non-ca
+  });
+});
+```
+
+(If the repo's component tests don't use `@testing-library/react`, mirror whatever render util `AnalysisContextSummary.test.tsx` uses.)
+
+- [ ] **Step 5: Lint + build + test** — `cd apps/dsa-web && npm run lint && npm run build && npm test`. PASS (TS exhaustiveness catches missed payload/type mappings; component test proves the conditional dropdown).
 - [ ] **Step 6: Screenshot** the create form's CA account-type dropdown + the grouped selector for the PR (saved outside the repo, not committed).
 - [ ] **Step 7: Commit** (if authorized): `git add apps/dsa-web/src && git commit -m "feat(account-type): create picker + grouped selector + display"`
 
@@ -398,7 +421,9 @@ Then wire `types/portfolio.ts`, `api/portfolio.ts`, and `PortfolioPage.tsx` (sta
 
 **Files:** `docs/CHANGELOG.md`, `docs/market-support.md`, and the spec.
 
-- [ ] **Step 1** — CHANGELOG `[Unreleased]` flat line: `- [新功能] Portfolio 账户新增通用 account_type 标签字段（nullable，幂等列回填，不 bump schema_migrations），market=ca 时提供加拿大账户类型（RRSP/TFSA/FHSA/RRIF/RESP/LIRA/RDSP/非注册现金/非注册保证金）；API 创建/更新（presence-aware，可显式清空）与 Web 创建下拉 + 按类型分组展示同步；纯标签不含税务逻辑。`
+- [ ] **Step 1** — CHANGELOG `[Unreleased]`, two flat lines:
+  - `- [新功能] Portfolio 账户新增通用 account_type 标签字段（nullable，幂等列回填，不 bump schema_migrations），market=ca 时提供加拿大账户类型（RRSP/TFSA/FHSA/RRIF/RESP/LIRA/RDSP/非注册现金/非注册保证金）；API 创建/更新（presence-aware，可显式清空）与 Web 创建下拉 + 按类型分组展示同步；纯标签不含税务逻辑。`
+  - `- [文档] Web 账户编辑 UI 与自定义 account_type 输入作为后续 work item（当前 Web 无账户编辑流程；account_type 可经 API 编辑）。`
 - [ ] **Step 2** — `docs/market-support.md` Canada section: move "账户类型" out of 后续 PR into supported.
 - [ ] **Step 3** — `docs/superpowers/specs/2026-06-26-canada-cdr-support-design.md` Tier 1 account-type note: correct to "idempotent column backfill, **no** schema_migrations bump"; mark **web edit UI** and **web custom-value input** as deferred (backend update is presence-aware/clear-capable via API).
 - [ ] **Step 4: Commit** (if authorized): `git add docs && git commit -m "docs(account-type): document support; correct spec scope (no edit UI, no version bump)"`
