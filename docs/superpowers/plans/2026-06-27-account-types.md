@@ -14,7 +14,7 @@
 
 - Branch `feature/account-types` (off `feature/ca-market`; has Tier 0 code + spec). Commits English, no `Co-Authored-By`, **only with explicit user authorization** (else stop at "tests pass").
 - `account_type`: nullable, **advisory free-string** (no `Literal`), `VARCHAR(32)`; normalized `strip().lower()`, empty → `None`. CA known set: `rrsp, tfsa, fhsa, rrif, resp, lira, rdsp, non_registered_cash, non_registered_margin`.
-- **Out of scope (descoped from spec):** web **account-edit UI** — the web has no edit flow (`portfolioApi.updateAccount()` does not exist). Backend update IS implemented (API/service/repo) so the field is editable via API; the web edit UI is a separate future work-item. Web custom-value input is also out of scope (picker offers the CA set; custom values are API-only). Update the spec's Tier-1 account-type note to reflect this.
+- **OPEN DECISION (needs user confirmation — do not assume):** web **account-edit UI**. The web has no edit flow today (`portfolioApi.updateAccount()` does not exist), but "no flow exists" is not itself a reason to drop the locked design. Backend update IS implemented (API/service/repo) so the field is editable via API. Option (a): keep design — add `portfolioApi.updateAccount()` + edit form + component test. Option (b): user confirms deferral — then record the follow-up in spec + CHANGELOG. Web custom-value input is pending the same decision. **Tasks below assume (b) for now; switch Task 5 to (a) if the user chooses to keep edit.**
 - **Test DB pattern (canonical, mirror `tests/test_portfolio_service.py`):** set `os.environ["DATABASE_PATH"]` to a temp file, `Config.reset_instance()`, `DatabaseManager.reset_instance()`, `DatabaseManager.get_instance()`, `PortfolioService()`; teardown resets both singletons and pops env. Run in `dsa-test` image: `docker run --rm -v $PWD:/app -w /app --entrypoint python dsa-test -m pytest <path> -v`.
 - Reference: `docs/superpowers/specs/2026-06-26-canada-cdr-support-design.md` (§ Tier 1 account type).
 
@@ -141,6 +141,14 @@ def test_account_type_backfilled_on_legacy_db():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(portfolio_accounts)")}
         conn.close()
         assert "account_type" in cols
+
+        # Idempotency: re-initialize the SAME db; the backfill must skip (no duplicate ALTER).
+        DatabaseManager.reset_instance()
+        DatabaseManager.get_instance()  # must not raise "duplicate column name"
+        conn = sqlite3.connect(db_path)
+        n = sum(1 for r in conn.execute("PRAGMA table_info(portfolio_accounts)") if r[1] == "account_type")
+        conn.close()
+        assert n == 1
     finally:
         DatabaseManager.reset_instance(); Config.reset_instance()
         os.environ.pop("DATABASE_PATH", None); tmp.cleanup()
@@ -209,29 +217,25 @@ class AccountTypeServiceTests(unittest.TestCase):
         DatabaseManager.reset_instance(); Config.reset_instance()
         os.environ.pop("DATABASE_PATH", None); self._tmp.cleanup()
 
+    def _acct(self, aid):
+        # PortfolioService returns dicts via _account_to_dict; there is no get_account().
+        return next(a for a in self.service.list_accounts(include_inactive=True) if a["id"] == aid)
+
     def test_create_update_clear_and_preserve_account_type(self):
         acc = self.service.create_account(name="RRSP", broker="WS", market="ca",
                                           base_currency="CAD", account_type="  RRSP ")
-        aid = acc["id"] if isinstance(acc, dict) else acc.id
-        # created + normalized
-        got = self.service.get_account(aid)
-        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "rrsp"
-        # update to another type
-        self.service.update_account(aid, account_type="tfsa")
-        got = self.service.get_account(aid)
-        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "tfsa"
-        # explicit clear
-        self.service.update_account(aid, account_type=None)
-        got = self.service.get_account(aid)
-        assert (got["account_type"] if isinstance(got, dict) else got.account_type) is None
-        # omitted -> preserved (set a value, then update something else)
+        aid = acc["id"]                                   # create_account returns a dict
+        assert self._acct(aid)["account_type"] == "rrsp"  # created + normalized
+        self.service.update_account(aid, account_type="tfsa")          # update to another type
+        assert self._acct(aid)["account_type"] == "tfsa"
+        self.service.update_account(aid, account_type=None)            # explicit clear
+        assert self._acct(aid)["account_type"] is None
         self.service.update_account(aid, account_type="fhsa")
-        self.service.update_account(aid, name="renamed")
-        got = self.service.get_account(aid)
-        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "fhsa"
+        self.service.update_account(aid, name="renamed")              # omitted -> preserved
+        assert self._acct(aid)["account_type"] == "fhsa"
 ```
 
-(Adjust `create_account`/`get_account`/`update_account` call shapes and return type — dict vs ORM — to the project's actual `PortfolioService` API; check `tests/test_portfolio_service.py` for exact signatures and the account serialization shape.)
+(`PortfolioService.create_account`/`list_accounts`/`update_account` return/accept dicts — confirm exact kwarg names against `tests/test_portfolio_service.py`. The serialization point to extend is `PortfolioService._account_to_dict` — add `"account_type": row.account_type` there in Step 3.)
 
 - [ ] **Step 2: Run → FAIL.**
 - [ ] **Step 3: Implement** the repo param, the service create normalization, the sentinel-based clear-capable `update_account`, and `account_type` in the account serialization (the dict/Item the service returns). Use `normalize_account_type` from Task 1.
@@ -267,11 +271,46 @@ def test_account_type_in_portfolio_api_schema():
     # presence: omitting account_type is distinguishable from sending null
     assert "account_type" not in PortfolioAccountUpdateRequest(name="x").model_fields_set
     assert "account_type" in PortfolioAccountUpdateRequest(account_type=None).model_fields_set
+
+
+class AccountTypeEndpointTests(unittest.TestCase):
+    """End-to-end presence-aware update via PUT /accounts/{id} (mirror tests/test_portfolio_api.py)."""
+
+    def setUp(self):
+        from src.config import Config
+        from src.storage import DatabaseManager
+        from fastapi.testclient import TestClient
+        from api.app import create_app
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["DATABASE_PATH"] = os.path.join(self._tmp.name, "api.db")
+        Config.reset_instance(); DatabaseManager.reset_instance()
+        # static_dir: mirror tests/test_portfolio_api.py (it passes an empty-static dir).
+        self.client = TestClient(create_app(static_dir=self._tmp.name))
+
+    def tearDown(self):
+        from src.config import Config
+        from src.storage import DatabaseManager
+        DatabaseManager.reset_instance(); Config.reset_instance()
+        os.environ.pop("DATABASE_PATH", None); self._tmp.cleanup()
+
+    def test_put_account_type_presence_aware(self):
+        base = "/api/v1/portfolio/accounts"
+        created = self.client.post(base, json={"name": "TFSA", "market": "ca",
+                                               "base_currency": "CAD", "account_type": "tfsa"})
+        assert created.status_code == 200, created.text
+        aid = created.json()["id"]
+        assert created.json()["account_type"] == "tfsa"
+        assert self.client.put(f"{base}/{aid}", json={"account_type": "rrsp"}).json()["account_type"] == "rrsp"
+        assert self.client.put(f"{base}/{aid}", json={"account_type": None}).json()["account_type"] is None
+        self.client.put(f"{base}/{aid}", json={"account_type": "fhsa"})  # set, then change another field
+        assert self.client.put(f"{base}/{aid}", json={"name": "renamed"}).json()["account_type"] == "fhsa"
 ```
 
+(Confirm the create/update response includes `account_type` — it does once `PortfolioAccountItem` carries it and `_account_to_dict` populates it. If `create_app` needs a different `static_dir`, mirror `tests/test_portfolio_api.py` exactly.)
+
 - [ ] **Step 2: Run → FAIL.**
-- [ ] **Step 3: Implement** the three schema fields + both endpoints (create forwards normalized value; update is presence-aware per above).
-- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 3: Implement** the three schema fields + both endpoints (create forwards normalized value; the `PUT` update is presence-aware: forward `account_type` to the service **only when** `"account_type" in request.model_fields_set`, value may be `None` to clear).
+- [ ] **Step 4: Run → PASS** (both the schema test and the endpoint test).
 - [ ] **Step 5: Backend gate** — `./scripts/ci_gate.sh` (or in `dsa-test`: flake8 critical + `pytest -m "not network"`). PASS; on failure record the cause.
 - [ ] **Step 6: Commit** (if authorized): `git add api/v1 tests/test_account_types.py && git commit -m "feat(account-type): account_type in portfolio API (presence-aware update)"`
 
@@ -333,16 +372,16 @@ export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
 
 export interface AccountTypeGroup<T> { key: string; label: string; accounts: T[]; }
 export function groupAccountsByType<T extends { accountType?: string }>(accounts: T[]): AccountTypeGroup<T>[] {
-  const order = [...CA_ACCOUNT_TYPES, ''];
   const buckets = new Map<string, T[]>();
   for (const a of accounts) {
     const k = (a.accountType || '').toLowerCase();
     (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(a);
   }
-  return order
-    .filter(k => buckets.has(k))
-    .concat([...buckets.keys()].filter(k => !order.includes(k)))  // unknown custom types
-    .map(k => ({ key: k, label: k ? (ACCOUNT_TYPE_LABELS[k] ?? k) : '未分类', accounts: buckets.get(k)! }));
+  // Order: known CA types first, then any custom/unknown types, then untyped ('') LAST.
+  const known = (CA_ACCOUNT_TYPES as readonly string[]).filter(k => buckets.has(k));
+  const custom = [...buckets.keys()].filter(k => k !== '' && !(CA_ACCOUNT_TYPES as readonly string[]).includes(k));
+  const order = [...known, ...custom, ...(buckets.has('') ? [''] : [])];
+  return order.map(k => ({ key: k, label: k ? (ACCOUNT_TYPE_LABELS[k] ?? k) : '未分类', accounts: buckets.get(k)! }));
 }
 ```
 
