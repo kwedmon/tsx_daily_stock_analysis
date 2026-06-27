@@ -1,362 +1,318 @@
-# Stream F · Tier 1a — Account Types (label-only) — Implementation Plan
+# Stream F · Tier 1a — Account Types (label-only) — Implementation Plan (v2)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
+>
+> **v2 (post-review):** fixed test wiring (`DatabaseManager` singleton + `reset_instance()` + `DATABASE_PATH` env, not a non-existent `Database` class); made the update contract clear-capable via `model_fields_set` (explicit `null` clears, omitted preserves); column backfill follows the `_ensure_llm_usage_telemetry_columns` precedent and does **not** bump `schema_migrations` (spec corrected); web **edit** is explicitly **out of scope** (no account-edit flow exists today) — this plan does create + grouping + display; added service/API tests, `strip()`/empty→None normalization, and a grouping-helper test.
 
-**Goal:** Add a generic, nullable `account_type` label to portfolio accounts, surfacing Canadian options (RRSP/TFSA/FHSA/…) when `market = ca`. Store + display + group accounts by type. **No tax logic this round.**
+**Goal:** Add a generic, nullable `account_type` label to portfolio accounts, surfacing Canadian options (RRSP/TFSA/FHSA/…) when `market = ca`. Create + display + group accounts by type, fully functional through model/repo/service/API; the web offers a create-time picker and grouped display. **No tax logic.**
 
-**Architecture:** Thin, additive change across the existing account create/update chain: new `account_types` module → DB column (idempotent SQLite `ALTER TABLE`, mirroring `_ensure_llm_usage_telemetry_columns`) → repo/service passthrough → API schema (advisory free-string, not a `Literal`) → web form select + display. Fork-only (Stream F); builds on the merged Tier 0 `ca` market.
+**Architecture:** Thin, additive change down the account chain: `account_types` module → nullable DB column (idempotent SQLite `ALTER TABLE`, mirroring `_ensure_llm_usage_telemetry_columns`, no version bump) → repo/service create+update (clear-capable) → API schema (advisory free-string, not a `Literal`) → web create picker + grouped selector. Fork-only (Stream F) on top of merged Tier 0 `ca`.
 
 **Tech Stack:** Python 3.11, SQLAlchemy, FastAPI, pytest; React/TS (`apps/dsa-web`, vitest).
 
 ## Global Constraints
 
-- Branch: `feature/account-types` (already created off `feature/ca-market`; has Tier 0 code + spec). Commit messages English, no `Co-Authored-By`.
-- **Commits require explicit user authorization** — run each task to "tests pass" then commit only if authorized.
-- `account_type` is **advisory / free-string** (nullable, no `Literal` enum) so other markets and custom values are never blocked. Canadian known set (lowercase snake): `rrsp, tfsa, fhsa, rrif, resp, lira, rdsp, non_registered_cash, non_registered_margin`.
-- New column: `account_type VARCHAR(32)` NULL on `portfolio_accounts`. Additive, backward-compatible.
-- Tests run in the `dsa-test` Docker image (`= daily-stock-analysis-server:latest` + pytest), mounting the repo at `/app` — host has no python deps:
-  `docker run --rm -v $PWD:/app -w /app --entrypoint python dsa-test -m pytest <path> -v`
+- Branch `feature/account-types` (off `feature/ca-market`; has Tier 0 code + spec). Commits English, no `Co-Authored-By`, **only with explicit user authorization** (else stop at "tests pass").
+- `account_type`: nullable, **advisory free-string** (no `Literal`), `VARCHAR(32)`; normalized `strip().lower()`, empty → `None`. CA known set: `rrsp, tfsa, fhsa, rrif, resp, lira, rdsp, non_registered_cash, non_registered_margin`.
+- **Out of scope (descoped from spec):** web **account-edit UI** — the web has no edit flow (`portfolioApi.updateAccount()` does not exist). Backend update IS implemented (API/service/repo) so the field is editable via API; the web edit UI is a separate future work-item. Web custom-value input is also out of scope (picker offers the CA set; custom values are API-only). Update the spec's Tier-1 account-type note to reflect this.
+- **Test DB pattern (canonical, mirror `tests/test_portfolio_service.py`):** set `os.environ["DATABASE_PATH"]` to a temp file, `Config.reset_instance()`, `DatabaseManager.reset_instance()`, `DatabaseManager.get_instance()`, `PortfolioService()`; teardown resets both singletons and pops env. Run in `dsa-test` image: `docker run --rm -v $PWD:/app -w /app --entrypoint python dsa-test -m pytest <path> -v`.
 - Reference: `docs/superpowers/specs/2026-06-26-canada-cdr-support-design.md` (§ Tier 1 account type).
 
 ---
 
-### Task 1: `account_types` module (option set + helpers)
+### Task 1: `account_types` module (options + normalization)
 
-**Files:**
-- Create: `src/portfolio/__init__.py` (if missing), `src/portfolio/account_types.py`
-- Test: `tests/test_account_types.py` (new)
+**Files:** Create `src/portfolio/__init__.py` (if missing), `src/portfolio/account_types.py`; Test `tests/test_account_types.py`.
 
-**Interfaces:**
-- Produces: `account_types_for_market(market: str) -> list[str]`; `is_known_account_type(value: str) -> bool`; constant `CA_ACCOUNT_TYPES: list[str]`.
+**Interfaces:** `CA_ACCOUNT_TYPES: list[str]`; `account_types_for_market(market) -> list[str]`; `is_known_account_type(value) -> bool`; `normalize_account_type(value: str | None) -> str | None`.
 
 - [ ] **Step 1: Write the failing test** — `tests/test_account_types.py`:
 
 ```python
 # -*- coding: utf-8 -*-
 from src.portfolio.account_types import (
-    CA_ACCOUNT_TYPES,
-    account_types_for_market,
-    is_known_account_type,
+    CA_ACCOUNT_TYPES, account_types_for_market, is_known_account_type, normalize_account_type,
 )
 
 
 def test_canadian_account_types_listed_for_ca():
     opts = account_types_for_market("ca")
     assert opts == CA_ACCOUNT_TYPES
-    for expected in ("rrsp", "tfsa", "fhsa", "non_registered_margin"):
-        assert expected in opts
+    for x in ("rrsp", "tfsa", "fhsa", "non_registered_margin"):
+        assert x in opts
 
 
 def test_non_ca_markets_have_no_predefined_types():
     assert account_types_for_market("us") == []
-    assert account_types_for_market("cn") == []
     assert account_types_for_market("") == []
 
 
-def test_is_known_account_type_is_case_insensitive_and_advisory():
+def test_is_known_is_case_insensitive_and_advisory():
     assert is_known_account_type("RRSP") is True
-    assert is_known_account_type("tfsa") is True
     assert is_known_account_type("totally_custom") is False
+
+
+def test_normalize_account_type_strips_lowercases_and_empties_to_none():
+    assert normalize_account_type("  RRSP ") == "rrsp"
+    assert normalize_account_type("") is None
+    assert normalize_account_type("   ") is None
+    assert normalize_account_type(None) is None
+    assert normalize_account_type("Custom_Thing") == "custom_thing"
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `... -m pytest tests/test_account_types.py -v` → FAIL (`ModuleNotFoundError`).
-
-- [ ] **Step 3: Implement** — `src/portfolio/account_types.py`:
+- [ ] **Step 2: Run → FAIL** (`ModuleNotFoundError`).
+- [ ] **Step 3: Implement** `src/portfolio/account_types.py`:
 
 ```python
 # -*- coding: utf-8 -*-
-"""Account-type option sets per market (label-only; no tax logic).
+"""Account-type option sets + normalization (label-only; no tax logic)."""
+from typing import Dict, List, Optional
 
-Advisory: the model/API accept any non-empty string, so other markets and custom
-values are never blocked. This module only supplies suggested options + display.
-"""
-from typing import Dict, List
-
-# Canadian registered / non-registered account types (lowercase snake_case keys).
 CA_ACCOUNT_TYPES: List[str] = [
-    "rrsp",
-    "tfsa",
-    "fhsa",
-    "rrif",
-    "resp",
-    "lira",
-    "rdsp",
-    "non_registered_cash",
-    "non_registered_margin",
+    "rrsp", "tfsa", "fhsa", "rrif", "resp", "lira", "rdsp",
+    "non_registered_cash", "non_registered_margin",
 ]
 
-_ACCOUNT_TYPES_BY_MARKET: Dict[str, List[str]] = {
-    "ca": CA_ACCOUNT_TYPES,
-}
+_ACCOUNT_TYPES_BY_MARKET: Dict[str, List[str]] = {"ca": CA_ACCOUNT_TYPES}
 
 
 def account_types_for_market(market: str) -> List[str]:
-    """Suggested account_type options for a market (empty list if none defined)."""
     return list(_ACCOUNT_TYPES_BY_MARKET.get((market or "").strip().lower(), []))
 
 
 def is_known_account_type(value: str) -> bool:
-    """True if value is a recognized account type for any market (advisory only)."""
     v = (value or "").strip().lower()
     return any(v in types for types in _ACCOUNT_TYPES_BY_MARKET.values())
+
+
+def normalize_account_type(value: Optional[str]) -> Optional[str]:
+    """Strip + lowercase; empty/whitespace -> None. Advisory: any non-empty value kept."""
+    if value is None:
+        return None
+    v = value.strip().lower()
+    return v or None
 ```
 
-(Create `src/portfolio/__init__.py` empty if the package does not exist.)
+(Create empty `src/portfolio/__init__.py` if the package is new.)
 
-- [ ] **Step 4: Run to verify it passes** → PASS.
-- [ ] **Step 5: Commit** (if authorized): `git add src/portfolio tests/test_account_types.py && git commit -m "feat(account-type): add account_types module with Canadian option set"`
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Commit** (if authorized): `git add src/portfolio tests/test_account_types.py && git commit -m "feat(account-type): account_types module (options + normalization)"`
 
 ---
 
-### Task 2: DB column + idempotent migration
+### Task 2: DB column + idempotent migration (no version bump)
 
-**Files:**
-- Modify: `src/storage.py` — `PortfolioAccount` model (~line 498, after `base_currency`); add `_ensure_portfolio_account_type_column` mirroring `_ensure_llm_usage_telemetry_columns`; call it in the init sequence (next to `self._ensure_llm_usage_telemetry_columns()`).
-- Test: `tests/test_account_types.py`
+**Files:** Modify `src/storage.py` (`PortfolioAccount` model after `base_currency`; `_PORTFOLIO_ACCOUNT_COLUMN_SQL` map; `_ensure_portfolio_account_type_column` mirroring `_ensure_llm_usage_telemetry_columns`; call it in the init sequence next to that method). Test `tests/test_account_types.py`.
 
-**Interfaces:**
-- Produces: `PortfolioAccount.account_type` column; existing DBs gain the column on init.
+**Migration note (#4):** column backfills in this codebase do **not** write `schema_migrations` — `_ensure_schema_migration_record` only records the single `CURRENT_SCHEMA_VERSION` create-all baseline, and `_ensure_llm_usage_telemetry_columns` adds columns without bumping it. `account_type` follows that precedent: idempotent (skipped when the column exists), no version bump. Do not invent a new version record.
 
 - [ ] **Step 1: Write the failing test** (append):
 
 ```python
+import os, sqlite3, tempfile
+
+
 def test_portfolio_account_has_account_type_column():
     from src.storage import PortfolioAccount
     assert "account_type" in PortfolioAccount.__table__.columns
 
 
-def test_account_type_column_backfilled_on_existing_db(tmp_path):
-    """Idempotent ALTER TABLE adds account_type to a pre-existing DB without the column."""
-    import sqlite3
-    db_path = tmp_path / "legacy.db"
-    # Simulate an old DB: portfolio_accounts without account_type.
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE portfolio_accounts ("
-        "id INTEGER PRIMARY KEY, owner_id TEXT, name TEXT NOT NULL, broker TEXT, "
-        "market TEXT NOT NULL DEFAULT 'cn', base_currency TEXT NOT NULL DEFAULT 'CNY', "
-        "is_active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME, updated_at DATETIME)"
-    )
-    conn.commit(); conn.close()
+def test_account_type_backfilled_on_legacy_db():
+    """Idempotent ALTER TABLE adds account_type to a pre-existing DB lacking it."""
+    from src.config import Config
+    from src.storage import DatabaseManager
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        db_path = os.path.join(tmp.name, "legacy.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE portfolio_accounts ("
+            "id INTEGER PRIMARY KEY, owner_id TEXT, name TEXT NOT NULL, broker TEXT, "
+            "market TEXT NOT NULL DEFAULT 'cn', base_currency TEXT NOT NULL DEFAULT 'CNY', "
+            "is_active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME, updated_at DATETIME)"
+        )
+        conn.commit(); conn.close()
 
-    from src.storage import Database
-    Database(f"sqlite:///{db_path}")  # init runs the column backfill
+        os.environ["DATABASE_PATH"] = db_path
+        Config.reset_instance(); DatabaseManager.reset_instance()
+        DatabaseManager.get_instance()  # init runs the column backfill
 
-    conn = sqlite3.connect(db_path)
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_accounts)")}
-    conn.close()
-    assert "account_type" in cols
+        conn = sqlite3.connect(db_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(portfolio_accounts)")}
+        conn.close()
+        assert "account_type" in cols
+    finally:
+        DatabaseManager.reset_instance(); Config.reset_instance()
+        os.environ.pop("DATABASE_PATH", None); tmp.cleanup()
 ```
 
-(If `Database` constructor signature differs, use the project's actual init entry — check `src/storage.py` `class Database`.)
-
-- [ ] **Step 2: Run to verify it fails** → FAIL (column missing).
-
-- [ ] **Step 3: Implement** — in `src/storage.py`:
-
-Add the column to `PortfolioAccount` after `base_currency`:
+- [ ] **Step 2: Run → FAIL** (column missing).
+- [ ] **Step 3: Implement** — model column after `base_currency`:
 
 ```python
-    account_type = Column(String(32), nullable=True)  # advisory label, e.g. ca: rrsp/tfsa/fhsa
+    account_type = Column(String(32), nullable=True)  # advisory label, e.g. ca: rrsp/tfsa
 ```
 
-Add a module-level SQL map near `_LLM_USAGE_TELEMETRY_COLUMN_SQL`:
+Module-level near `_LLM_USAGE_TELEMETRY_COLUMN_SQL`:
 
 ```python
 _PORTFOLIO_ACCOUNT_COLUMN_SQL = {"account_type": "VARCHAR(32)"}
 ```
 
-Add the migration method (mirror `_ensure_llm_usage_telemetry_columns` exactly, swapping the table/dict):
-
-```python
-    def _ensure_portfolio_account_type_column(self) -> None:
-        """Add the nullable account_type column to existing SQLite portfolio_accounts."""
-        if not self._is_sqlite_engine:
-            return
-        try:
-            existing = {
-                column["name"]
-                for column in inspect(self._engine).get_columns(PortfolioAccount.__tablename__)
-            }
-        except Exception as exc:
-            logger.warning(
-                "[portfolio] failed to inspect account columns; skipping account_type backfill: %s",
-                exc,
-            )
-            return
-        max_retries = self._sqlite_write_retry_max
-        for column, column_type in _PORTFOLIO_ACCOUNT_COLUMN_SQL.items():
-            if column in existing:
-                continue
-            for attempt in range(max_retries + 1):
-                try:
-                    with self._engine.begin() as connection:
-                        connection.exec_driver_sql(
-                            f"ALTER TABLE {PortfolioAccount.__tablename__} "
-                            f"ADD COLUMN {column} {column_type}"
-                        )
-                    existing.add(column)
-                    break
-                except OperationalError as exc:
-                    if self._is_sqlite_duplicate_column_error(exc, column):
-                        existing.add(column)
-                        break
-                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
-                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
-                        if delay > 0:
-                            time.sleep(delay)
-                        continue
-                    raise
-```
-
-Call it in the init sequence (next to the other `_ensure_*` calls, e.g. right after `self._ensure_llm_usage_telemetry_columns()`):
+Add `_ensure_portfolio_account_type_column` — copy the body of `_ensure_llm_usage_telemetry_columns` **verbatim**, changing only the table to `PortfolioAccount.__tablename__`, the column map to `_PORTFOLIO_ACCOUNT_COLUMN_SQL`, and the log prefix to `[portfolio]`. Call it in the init sequence right after `self._ensure_llm_usage_telemetry_columns()`:
 
 ```python
             self._ensure_portfolio_account_type_column()
 ```
 
-(Match the exact retry/error helpers used by `_ensure_llm_usage_telemetry_columns` — copy its body verbatim, only changing table + column map. If it imports `time`/`inspect`/`OperationalError`, those are already imported in `storage.py`.)
-
-- [ ] **Step 4: Run to verify it passes** → PASS.
-- [ ] **Step 5: Commit** (if authorized): `git add src/storage.py tests/test_account_types.py && git commit -m "feat(account-type): add nullable account_type column + idempotent migration"`
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Commit** (if authorized): `git add src/storage.py tests/test_account_types.py && git commit -m "feat(account-type): nullable account_type column + idempotent backfill"`
 
 ---
 
-### Task 3: Repo + service create/update passthrough + Item mapping
+### Task 3: Repo + service create/update (clear-capable) + serialization
 
-**Files:**
-- Modify: `src/repositories/portfolio_repo.py` — `create_account` (add `account_type` param); confirm `update_account(account_id, fields)` already merges arbitrary fields (it does — generic dict).
-- Modify: `src/services/portfolio_service.py` — `create_account` (~line 92) and `update_account` (~line 119) pass `account_type` through; wherever `PortfolioAccount` → response/item dict is built, include `account_type`.
-- Test: `tests/test_account_types.py`
+**Files:** Modify `src/repositories/portfolio_repo.py` (`create_account` add `account_type` param; `update_account(account_id, fields)` is already a generic dict merge — verify it sets `account_type` incl. `None`). Modify `src/services/portfolio_service.py` (`create_account` ~line 92 add+normalize `account_type`; `update_account` ~line 119 accept a clear-capable `account_type`; include `account_type` wherever an account is serialized to a dict/Item). Test `tests/test_account_types.py`.
 
-**Interfaces:**
-- Consumes: model column (Task 2). Produces: `service.create_account(..., account_type=...)` persists and round-trips.
-
-- [ ] **Step 1: Write the failing test** (append) — use the project's service construction (mirror an existing portfolio service test, e.g. `tests/test_portfolio_*`):
+**Clear-capable update:** the service `update_account` must distinguish "set to a value", "clear to None", and "leave unchanged". Use a sentinel so `None` means *clear*:
 
 ```python
-def test_create_account_persists_account_type(tmp_path):
-    from src.storage import Database
-    from src.repositories.portfolio_repo import PortfolioRepository
-    db = Database(f"sqlite:///{tmp_path / 'p.db'}")
-    repo = PortfolioRepository(db)
-    acc = repo.create_account(name="RRSP", broker="WS", market="ca",
-                              base_currency="CAD", account_type="rrsp")
-    assert acc.account_type == "rrsp"
-    fetched = repo.get_account(acc.id)
-    assert fetched.account_type == "rrsp"
+_UNSET = object()
+def update_account(self, account_id, *, ..., account_type=_UNSET):
+    fields = {}
+    ...
+    if account_type is not _UNSET:
+        fields["account_type"] = normalize_account_type(account_type)  # None clears
+    return self.repo.update_account(account_id, fields)
 ```
 
-(Adjust `PortfolioRepository`/`Database` construction to the project's actual constructors — check an existing `tests/test_portfolio_*.py` for the exact wiring.)
-
-- [ ] **Step 2: Run to verify it fails** → FAIL (`create_account() got an unexpected keyword argument`).
-
-- [ ] **Step 3: Implement**
-
-`portfolio_repo.create_account`: add the param + set it on the row:
+- [ ] **Step 1: Write the failing test** (append) — mirror `tests/test_portfolio_service.py` setUp (env `DATABASE_PATH` + reset_instance + `PortfolioService()`):
 
 ```python
-    def create_account(
-        self,
-        *,
-        name: str,
-        broker: Optional[str],
-        market: str,
-        base_currency: str,
-        owner_id: Optional[str] = None,
-        account_type: Optional[str] = None,
-    ) -> PortfolioAccount:
-        with self.db.get_session() as session:
-            row = PortfolioAccount(
-                owner_id=owner_id,
-                name=name,
-                broker=broker,
-                market=market,
-                base_currency=base_currency,
-                account_type=account_type,
-                is_active=True,
-            )
-            session.add(row)
-            session.commit()
-            session.refresh(row)
-            return row
+import unittest
+
+
+class AccountTypeServiceTests(unittest.TestCase):
+    def setUp(self):
+        from src.config import Config
+        from src.storage import DatabaseManager
+        from src.services.portfolio_service import PortfolioService
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["DATABASE_PATH"] = os.path.join(self._tmp.name, "p.db")
+        Config.reset_instance(); DatabaseManager.reset_instance()
+        DatabaseManager.get_instance()
+        self.service = PortfolioService()
+
+    def tearDown(self):
+        from src.config import Config
+        from src.storage import DatabaseManager
+        DatabaseManager.reset_instance(); Config.reset_instance()
+        os.environ.pop("DATABASE_PATH", None); self._tmp.cleanup()
+
+    def test_create_update_clear_and_preserve_account_type(self):
+        acc = self.service.create_account(name="RRSP", broker="WS", market="ca",
+                                          base_currency="CAD", account_type="  RRSP ")
+        aid = acc["id"] if isinstance(acc, dict) else acc.id
+        # created + normalized
+        got = self.service.get_account(aid)
+        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "rrsp"
+        # update to another type
+        self.service.update_account(aid, account_type="tfsa")
+        got = self.service.get_account(aid)
+        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "tfsa"
+        # explicit clear
+        self.service.update_account(aid, account_type=None)
+        got = self.service.get_account(aid)
+        assert (got["account_type"] if isinstance(got, dict) else got.account_type) is None
+        # omitted -> preserved (set a value, then update something else)
+        self.service.update_account(aid, account_type="fhsa")
+        self.service.update_account(aid, name="renamed")
+        got = self.service.get_account(aid)
+        assert (got["account_type"] if isinstance(got, dict) else got.account_type) == "fhsa"
 ```
 
-`portfolio_service.create_account` (~line 92): add `account_type: Optional[str] = None` param and forward it to `repo.create_account(...)`. `update_account` (~line 119): include `account_type` in the updatable fields it forwards (it builds a `fields` dict — add `account_type` when provided). Wherever the service serializes an account to a dict/Item, add `"account_type": row.account_type`.
+(Adjust `create_account`/`get_account`/`update_account` call shapes and return type — dict vs ORM — to the project's actual `PortfolioService` API; check `tests/test_portfolio_service.py` for exact signatures and the account serialization shape.)
 
-- [ ] **Step 4: Run to verify it passes** → PASS.
-- [ ] **Step 5: Commit** (if authorized): `git add src/repositories/portfolio_repo.py src/services/portfolio_service.py tests/test_account_types.py && git commit -m "feat(account-type): thread account_type through repo + service"`
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** the repo param, the service create normalization, the sentinel-based clear-capable `update_account`, and `account_type` in the account serialization (the dict/Item the service returns). Use `normalize_account_type` from Task 1.
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Commit** (if authorized): `git add src/repositories/portfolio_repo.py src/services/portfolio_service.py tests/test_account_types.py && git commit -m "feat(account-type): clear-capable account_type through repo + service"`
 
 ---
 
-### Task 4: API schema + endpoint
+### Task 4: API schema + endpoints (presence-aware update)
 
-**Files:**
-- Modify: `api/v1/schemas/portfolio.py` — `PortfolioAccountCreateRequest` (~line 8), `PortfolioAccountUpdateRequest` (~line 16), `PortfolioAccountItem` (~line 25): add `account_type: Optional[str] = None` (free string, **not** a `Literal`).
-- Modify: `api/v1/endpoints/portfolio.py` — `create_account` (~line 82) forwards `request.account_type` to `service.create_account(...)`; update endpoint forwards it too.
-- Optional: add `GET` helper exposing `account_types_for_market` (only if a UI needs server-driven options; otherwise the web hardcodes the list — see Task 5). **YAGNI: skip unless Task 5 needs it.**
-- Test: `tests/test_account_types.py`
+**Files:** Modify `api/v1/schemas/portfolio.py` (`PortfolioAccountCreateRequest`, `PortfolioAccountUpdateRequest`, `PortfolioAccountItem`: add `account_type: Optional[str] = Field(default=None, max_length=32)`). Modify `api/v1/endpoints/portfolio.py` (`create_account` forwards normalized `account_type`; the **update** endpoint forwards it **only when present** via `model_fields_set`, allowing an explicit `None` to clear). Test `tests/test_account_types.py`.
 
-**Interfaces:**
-- Produces: API accepts/returns `account_type`.
+**Presence-aware update (#2):**
+```python
+# in the update endpoint:
+kwargs = {}
+if "account_type" in request.model_fields_set:
+    kwargs["account_type"] = request.account_type   # may be None -> clears
+service.update_account(account_id, ..., **kwargs)
+```
 
 - [ ] **Step 1: Write the failing test** (append):
 
 ```python
 def test_account_type_in_portfolio_api_schema():
-    from api.v1.schemas.portfolio import PortfolioAccountCreateRequest, PortfolioAccountItem
-    req = PortfolioAccountCreateRequest(name="TFSA", market="ca",
-                                        base_currency="CAD", account_type="tfsa")
-    assert req.account_type == "tfsa"
-    # Free string (advisory): a custom value is accepted, not rejected.
-    req2 = PortfolioAccountCreateRequest(name="X", market="ca",
-                                         base_currency="CAD", account_type="custom_thing")
-    assert req2.account_type == "custom_thing"
-    # Item carries it back.
+    from api.v1.schemas.portfolio import PortfolioAccountCreateRequest, PortfolioAccountUpdateRequest, PortfolioAccountItem
+    r = PortfolioAccountCreateRequest(name="TFSA", market="ca", base_currency="CAD", account_type="tfsa")
+    assert r.account_type == "tfsa"
+    # advisory free string accepted
+    assert PortfolioAccountCreateRequest(name="X", market="ca", base_currency="CAD",
+                                         account_type="custom").account_type == "custom"
     assert "account_type" in PortfolioAccountItem.model_fields
+    # presence: omitting account_type is distinguishable from sending null
+    assert "account_type" not in PortfolioAccountUpdateRequest(name="x").model_fields_set
+    assert "account_type" in PortfolioAccountUpdateRequest(account_type=None).model_fields_set
 ```
 
-- [ ] **Step 2: Run to verify it fails** → FAIL (`account_type` not a field).
-
-- [ ] **Step 3: Implement** — add `account_type: Optional[str] = Field(default=None, max_length=32)` to the three models; forward it in the create/update endpoints (`service.create_account(..., account_type=request.account_type)`).
-
-- [ ] **Step 4: Run to verify it passes** → PASS.
-- [ ] **Step 5: Run the backend gate** — `./scripts/ci_gate.sh` (or, in `dsa-test`: flake8 critical + `pytest -m "not network"`). Expected: PASS; on failure record the cause.
-- [ ] **Step 6: Commit** (if authorized): `git add api/v1 tests/test_account_types.py && git commit -m "feat(account-type): accept/return account_type in portfolio API"`
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** the three schema fields + both endpoints (create forwards normalized value; update is presence-aware per above).
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Backend gate** — `./scripts/ci_gate.sh` (or in `dsa-test`: flake8 critical + `pytest -m "not network"`). PASS; on failure record the cause.
+- [ ] **Step 6: Commit** (if authorized): `git add api/v1 tests/test_account_types.py && git commit -m "feat(account-type): account_type in portfolio API (presence-aware update)"`
 
 ---
 
-### Task 5: Web — account-type select + display
+### Task 5: Web — create picker + grouped selector + display (no edit)
 
 **Files:**
-- Modify: `apps/dsa-web/src/types/portfolio.ts` — add `accountType?: string` to the account item + create/update payload types.
-- Modify: `apps/dsa-web/src/api/portfolio.ts` — map `account_type` ↔ `accountType` in `createAccount`/`updateAccount` payloads and the item parser (lines ~112-117, 171, 207).
-- Create: `apps/dsa-web/src/utils/accountTypes.ts` — mirror `src/portfolio/account_types.py`: `CA_ACCOUNT_TYPES` + `accountTypesForMarket(market)` + a zh/en label map (or i18n keys).
-- Modify: `apps/dsa-web/src/pages/PortfolioPage.tsx` — `accountForm` state (~line 180) gains `accountType`; the create form (~line 1088, near the market `<select>`) renders an account-type `<select>` **only when `accountForm.market === 'ca'`**, options from `accountTypesForMarket('ca')`; include `account_type` in the `createAccount` payload (~line 789) and update; display the account type on the account card.
-- Test: `apps/dsa-web/src/utils/__tests__/accountTypes.test.ts` (new)
+- Modify `apps/dsa-web/src/types/portfolio.ts` (add `accountType?: string` to item + create payload types).
+- Modify `apps/dsa-web/src/api/portfolio.ts` (`createAccount`: map `accountType` → `account_type`; item parser: `account_type` → `accountType`). **No `updateAccount` added — edit is out of scope.**
+- Create `apps/dsa-web/src/utils/accountTypes.ts` (`CA_ACCOUNT_TYPES`, `accountTypesForMarket`, `ACCOUNT_TYPE_LABELS`, `groupAccountsByType(accounts)`).
+- Modify `apps/dsa-web/src/pages/PortfolioPage.tsx`: `accountForm` state (~line 180) gains `accountType: ''`; create form (~line 1088, near the market `<select>`) renders an account-type `<select>` **only when `accountForm.market === 'ca'`** (options from `accountTypesForMarket('ca')` + a blank "未指定"); include `accountType` in the `createAccount` payload (~line 789); the account selector (~line 949) groups accounts via `<optgroup>` by type (untyped accounts in a "未分类" group); show the type on the account card.
+- Test: `apps/dsa-web/src/utils/__tests__/accountTypes.test.ts` (new).
 
-**Interfaces:**
-- Consumes: Task 4 API. Build proves type completeness; the test proves the visible option list.
-
-- [ ] **Step 1: Write the failing test** — `apps/dsa-web/src/utils/__tests__/accountTypes.test.ts`:
+- [ ] **Step 1: Write the failing test**:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { CA_ACCOUNT_TYPES, accountTypesForMarket } from '../accountTypes';
+import { CA_ACCOUNT_TYPES, accountTypesForMarket, groupAccountsByType } from '../accountTypes';
 
 describe('accountTypes', () => {
   it('returns the Canadian set for ca and nothing for others', () => {
-    expect(accountTypesForMarket('ca')).toEqual(CA_ACCOUNT_TYPES);
+    expect(accountTypesForMarket('ca')).toEqual([...CA_ACCOUNT_TYPES]);
     expect(accountTypesForMarket('us')).toEqual([]);
-    expect(CA_ACCOUNT_TYPES).toContain('rrsp');
     expect(CA_ACCOUNT_TYPES).toContain('non_registered_margin');
+  });
+  it('groups accounts by type, untyped last', () => {
+    const groups = groupAccountsByType([
+      { id: 1, name: 'A', accountType: 'rrsp' },
+      { id: 2, name: 'B' },
+      { id: 3, name: 'C', accountType: 'rrsp' },
+    ] as any);
+    expect(groups.find(g => g.key === 'rrsp')?.accounts.map(a => a.id)).toEqual([1, 3]);
+    expect(groups[groups.length - 1].key).toBe('');           // untyped group last
+    expect(groups[groups.length - 1].accounts.map(a => a.id)).toEqual([2]);
   });
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `cd apps/dsa-web && npx vitest run src/utils/__tests__/accountTypes.test.ts` → FAIL (module missing).
-
-- [ ] **Step 3: Implement** — create `accountTypes.ts`:
+- [ ] **Step 2: Run → FAIL** — `cd apps/dsa-web && npx vitest run src/utils/__tests__/accountTypes.test.ts`.
+- [ ] **Step 3: Implement** `accountTypes.ts`:
 
 ```ts
 export const CA_ACCOUNT_TYPES = [
@@ -365,7 +321,6 @@ export const CA_ACCOUNT_TYPES = [
 ] as const;
 
 const BY_MARKET: Record<string, readonly string[]> = { ca: CA_ACCOUNT_TYPES };
-
 export function accountTypesForMarket(market: string): string[] {
   return [...(BY_MARKET[(market || '').toLowerCase()] ?? [])];
 }
@@ -373,34 +328,48 @@ export function accountTypesForMarket(market: string): string[] {
 export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   rrsp: 'RRSP', tfsa: 'TFSA', fhsa: 'FHSA', rrif: 'RRIF', resp: 'RESP',
   lira: 'LIRA', rdsp: 'RDSP',
-  non_registered_cash: '非注册现金 (Cash)',
-  non_registered_margin: '非注册保证金 (Margin)',
+  non_registered_cash: '非注册现金', non_registered_margin: '非注册保证金',
 };
+
+export interface AccountTypeGroup<T> { key: string; label: string; accounts: T[]; }
+export function groupAccountsByType<T extends { accountType?: string }>(accounts: T[]): AccountTypeGroup<T>[] {
+  const order = [...CA_ACCOUNT_TYPES, ''];
+  const buckets = new Map<string, T[]>();
+  for (const a of accounts) {
+    const k = (a.accountType || '').toLowerCase();
+    (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(a);
+  }
+  return order
+    .filter(k => buckets.has(k))
+    .concat([...buckets.keys()].filter(k => !order.includes(k)))  // unknown custom types
+    .map(k => ({ key: k, label: k ? (ACCOUNT_TYPE_LABELS[k] ?? k) : '未分类', accounts: buckets.get(k)! }));
+}
 ```
 
-Then wire `types/portfolio.ts`, `api/portfolio.ts` (account_type ↔ accountType), and `PortfolioPage.tsx` (state + conditional `<select>` shown when `market==='ca'` + payload + card display).
+Then wire `types/portfolio.ts`, `api/portfolio.ts`, and `PortfolioPage.tsx` (state + conditional `<select>` when `market==='ca'` + payload + `<optgroup>` selector + card display).
 
-- [ ] **Step 4: Run to verify it passes** — vitest → PASS.
-- [ ] **Step 5: Lint + build + test** — `cd apps/dsa-web && npm run lint && npm run build && npm test`. Expected: PASS (TS exhaustiveness catches any missed payload mapping).
-- [ ] **Step 6: Capture a screenshot** of the account form showing the Canadian account-type dropdown for the PR (saved outside the repo, not committed).
-- [ ] **Step 7: Commit** (if authorized): `git add apps/dsa-web/src && git commit -m "feat(account-type): account-type select + display in web UI"`
+- [ ] **Step 4: Run → PASS** (vitest).
+- [ ] **Step 5: Lint + build + test** — `cd apps/dsa-web && npm run lint && npm run build && npm test`. PASS (TS exhaustiveness catches missed payload/type mappings).
+- [ ] **Step 6: Screenshot** the create form's CA account-type dropdown + the grouped selector for the PR (saved outside the repo, not committed).
+- [ ] **Step 7: Commit** (if authorized): `git add apps/dsa-web/src && git commit -m "feat(account-type): create picker + grouped selector + display"`
 
 ---
 
-### Task 6: Docs
+### Task 6: Docs + spec scope correction
 
-**Files:** Modify `docs/CHANGELOG.md` (`[Unreleased]`, flat `- [新功能] …`); add an "账户类型" note to `docs/market-support.md` Canada section (the deferred item is now done).
+**Files:** `docs/CHANGELOG.md`, `docs/market-support.md`, and the spec.
 
-- [ ] **Step 1** — CHANGELOG line: `- [新功能] Portfolio 账户新增通用 account_type 标签字段（nullable，幂等迁移），market=ca 时提供加拿大账户类型选项（RRSP/TFSA/FHSA/RRIF/RESP/LIRA/RDSP/非注册现金/非注册保证金），纯标签不含税务逻辑；API（Create/Update/Item）与 Web 录入下拉同步。`
-- [ ] **Step 2** — in `docs/market-support.md`, move "账户类型" out of the Canada "不承诺项"/后续 PR list into supported.
-- [ ] **Step 3: Commit** (if authorized): `git add docs && git commit -m "docs(account-type): document account_type support"`
+- [ ] **Step 1** — CHANGELOG `[Unreleased]` flat line: `- [新功能] Portfolio 账户新增通用 account_type 标签字段（nullable，幂等列回填，不 bump schema_migrations），market=ca 时提供加拿大账户类型（RRSP/TFSA/FHSA/RRIF/RESP/LIRA/RDSP/非注册现金/非注册保证金）；API 创建/更新（presence-aware，可显式清空）与 Web 创建下拉 + 按类型分组展示同步；纯标签不含税务逻辑。`
+- [ ] **Step 2** — `docs/market-support.md` Canada section: move "账户类型" out of 后续 PR into supported.
+- [ ] **Step 3** — `docs/superpowers/specs/2026-06-26-canada-cdr-support-design.md` Tier 1 account-type note: correct to "idempotent column backfill, **no** schema_migrations bump"; mark **web edit UI** and **web custom-value input** as deferred (backend update is presence-aware/clear-capable via API).
+- [ ] **Step 4: Commit** (if authorized): `git add docs && git commit -m "docs(account-type): document support; correct spec scope (no edit UI, no version bump)"`
 
 ---
 
 ## Self-Review
 
-**Spec coverage (§ Tier 1 account type):** generic nullable field ✓ (T2); Canadian options when ca ✓ (T1/T5); label/grouping only, no tax ✓ (out of scope by design); advisory free-string ✓ (T1/T4); migration via existing repair pattern ✓ (T2); API + web ✓ (T4/T5). The portfolio CAD/USD valuation口径 + missing-FX contract are a **separate** Tier-1b plan/branch (`feature/portfolio-cad-fx`) — not in this plan.
+**Spec coverage:** generic nullable field ✓(T2); CA options when ca ✓(T1/T5); label/grouping ✓(T5 optgroup); advisory free-string + normalization ✓(T1/T4); create + clear-capable update through repo/service/API ✓(T3/T4). **Descoped & reconciled in spec** (T6): web edit UI, web custom-value input, schema_migrations bump. Portfolio CAD/USD口径 + missing-FX is a separate `feature/portfolio-cad-fx` plan.
 
-**Placeholder scan:** code shown for each step. The "adjust to actual constructor" notes (Database/PortfolioRepository wiring in T2/T3) are confirm-against-an-existing-test instructions, tied to a runnable test, not deferred design — confirm the wiring from any existing `tests/test_portfolio_*.py`.
+**Placeholder scan:** test wiring uses the verified `DatabaseManager`/`DATABASE_PATH`/`reset_instance` pattern. "Adjust to actual service signature" notes (T3) are confirm-against-`tests/test_portfolio_service.py`, tied to runnable tests.
 
-**Type consistency:** `account_type` (snake) ↔ `accountType` (web camel); column `VARCHAR(32)` ⇄ Pydantic `max_length=32` ⇄ TS `string`; CA option keys identical in `account_types.py` and `accountTypes.ts` (`rrsp…non_registered_margin`).
+**Type consistency:** `account_type` (snake, py/db/api) ↔ `accountType` (web camel); `VARCHAR(32)` ⇄ `max_length=32` ⇄ TS `string`; CA keys identical in `account_types.py` and `accountTypes.ts`; sentinel `_UNSET` (service) vs `model_fields_set` (API) both express "field omitted vs explicit null".
